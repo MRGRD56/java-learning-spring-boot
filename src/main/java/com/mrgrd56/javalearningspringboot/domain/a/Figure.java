@@ -1,4 +1,4 @@
-package com.mrgrd56.javalearningspringboot.domain;
+package com.mrgrd56.javalearningspringboot.domain.a;
 
 public interface Figure {
     default void move() {
