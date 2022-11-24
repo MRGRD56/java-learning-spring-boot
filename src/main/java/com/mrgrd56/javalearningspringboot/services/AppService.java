@@ -35,7 +35,9 @@ public class AppService {
     }
 
     public void start() throws Exception {
-        collectionsService.start();
+        var cores = Runtime.getRuntime().availableProcessors();
+
+//        concurrencyService.testExecutor();
 //        var map = new HashMap<String, String>();
 //        map.put(null, "ничего");
 //        map.put("12", "twelve");

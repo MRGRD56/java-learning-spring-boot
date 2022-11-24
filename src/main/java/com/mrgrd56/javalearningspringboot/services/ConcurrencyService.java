@@ -10,9 +10,7 @@ import org.springframework.web.client.RestTemplate;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.Callable;
-import java.util.concurrent.ExecutionException;
-import java.util.concurrent.Executors;
+import java.util.concurrent.*;
 import java.util.stream.IntStream;
 
 @Service
@@ -60,6 +58,63 @@ public class ConcurrencyService {
                 throw new RuntimeException(e);
             }
             return fetchEntries(index);
+        }
+    }
+
+    private final Semaphore testingSemaphore = new Semaphore(3);
+
+    public void testSemaphore(int number) throws InterruptedException {
+        testingSemaphore.acquire();
+
+        Thread.sleep(1000 + (number * 10L));
+        System.out.println("number " + number);
+
+        testingSemaphore.release();
+    }
+
+    public void startTestingSemaphore() {
+        for (var i = 0; i < 500; i++) {
+            final int finalI = i;
+            new Thread(() -> {
+                try {
+                    testSemaphore(finalI);
+                } catch (InterruptedException e) {
+                    throw new RuntimeException(e);
+                }
+            }).start();
+        }
+    }
+
+    private volatile boolean isPaused = false;
+    private final ExecutorService executor = Executors.newFixedThreadPool(3);
+
+    public void testExecutor() {
+        for (var i = 0; i < 500; i++) {
+            int finalI = i;
+            executor.submit(() -> {
+                var wasPaused = isPaused;
+                if (wasPaused) {
+                    System.out.println("i=" + finalI + " paused");
+                }
+                while (isPaused) {
+                    Thread.onSpinWait();
+                }
+
+                if (isPaused) {
+                    isPaused = false;
+                }
+
+                try {
+                    Thread.sleep(1000);
+                    if (finalI % 5 == 0) {
+                        isPaused = true;
+                    }
+                } catch (InterruptedException e) {
+                    throw new RuntimeException(e);
+                }
+
+                System.out.println("testExecutor = i = " + finalI);
+            });
         }
     }
 }
