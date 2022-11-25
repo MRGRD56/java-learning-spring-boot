@@ -1,6 +1,8 @@
 package com.mrgrd56.javalearningspringboot.services;
 
 import com.mrgrd56.javalearningspringboot.util.CommandTelnetClient;
+import org.apache.commons.net.telnet.EchoOptionHandler;
+import org.apache.commons.net.telnet.InvalidTelnetOptionException;
 import org.springframework.stereotype.Service;
 
 import javax.annotation.PostConstruct;
@@ -14,50 +16,31 @@ public class ScrapyTelnetService {
     public void work() {
         try (CommandTelnetClient commandTelnetClient = new CommandTelnetClient("localhost", 6023)) {
 
-//            commandTelnetClient.listenOutput((output) -> {
-//                System.out.println(output);
-////                commandTelnetClient.sendInput("scrapy");
-//
-//                return false;
-//            });
+            // Как я понял это позволяет отправлять команду DO ECHO ({0xff, 0xfd, 0x01}) от клиента к серверу
+            // По умолчанию почему-то отправляется DONT ECHO ({0xff, 0xfe, 0x01}) после того как был запрошен пароль
+            // Из-за этого сервер перестаёт отдавать какой-либо вывод
+            // https://www.ibm.com/docs/en/zos/2.3.0?topic=problems-telnet-commands-options
+            commandTelnetClient.addOptionHandler(new EchoOptionHandler(true, true, true, true));
 
-            commandTelnetClient.telnetClient.getInputStream().mark(0);
+            commandTelnetClient.waitOutput(Pattern.compile("Username:\s*$"), true);
+            commandTelnetClient.sendInputLine("scrapy");
 
-//            String usernameRequest = commandTelnetClient.waitOutput(Pattern.compile("^Username:$"));
-//            commandTelnetClient.sendInput("scrapy");
-//            commandTelnetClient.sendInput("e0d56daad1af2e03");
+            commandTelnetClient.waitOutput(Pattern.compile("Password:\s*$"), true);
+            commandTelnetClient.sendInputLine("qwe123");
 
-            commandTelnetClient.sendInput("stats.get_stats()\r\n");
-//            commandTelnetClient.sendInput("");
+            String authOutput = commandTelnetClient.waitOutput(Pattern.compile("\\S"), true);
 
-//            String output = commandTelnetClient.waitOutput();
-            try {
-                Thread.sleep(1000);
-                Thread.sleep(10000000);
-            } catch (InterruptedException e) {
-                throw new RuntimeException(e);
+            if (authOutput.equalsIgnoreCase("Authentication")) {
+                String nextWord = commandTelnetClient.waitOutput(Pattern.compile("\\S"), true);
+                throw new RuntimeException("Authentication " + nextWord);
             }
 
-//            commandTelnetClient.telnetClient.registerInputListener(() -> {
-//
-//            });
+            commandTelnetClient.sendInputLine("stats.get_stats()");
 
-//            InputStream inputStream = commandTelnetClient.telnetClient.getInputStream();
-//            Scanner scanner = new Scanner(inputStream, commandTelnetClient.telnetClient.getCharset());
-//            new BufferedReader(new InputStreamReader(inputStream))
-
-//            while (true) {
-//                byte[] readBytes = inputStream.readAllBytes();
-//                if (readBytes.length > 0) {
-//                    String str = new String(readBytes, commandTelnetClient.telnetClient.getCharset());
-//                    System.out.println(str);
-//                }
-//            }
-
-//            String result = scrapyTelnetClient.sendCommand("scrapy\n");
-//            String result2 = scrapyTelnetClient.sendCommand("e0d56daad1af2e03\n");
-//            String result3 = scrapyTelnetClient.sendCommand("stats.get_stats()\n");
-        } catch (IOException e) {
+            commandTelnetClient.waitOutputLine(Pattern.compile("stats.get_stats\\(\\)"));
+            String result = commandTelnetClient.waitOutputLine(Pattern.compile("\\S"));
+            Object a = 2;
+        } catch (IOException | InvalidTelnetOptionException e) {
             throw new RuntimeException(e);
         }
     }

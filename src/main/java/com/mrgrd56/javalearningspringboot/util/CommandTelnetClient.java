@@ -1,31 +1,36 @@
 package com.mrgrd56.javalearningspringboot.util;
 
 
+import org.apache.commons.net.telnet.InvalidTelnetOptionException;
 import org.apache.commons.net.telnet.TelnetClient;
+import org.apache.commons.net.telnet.TelnetOptionHandler;
 import org.springframework.lang.Nullable;
 
-import java.io.*;
+import java.io.Closeable;
+import java.io.IOException;
+import java.io.InputStream;
 import java.util.Scanner;
 import java.util.concurrent.*;
+import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.regex.Pattern;
 
 public class CommandTelnetClient implements Closeable {
 
-    public final TelnetClient telnetClient = new TelnetClient();
-    private final InputStream inputStream;
-    private final BufferedReader inputReader;
+    private final TelnetClient telnetClient = new TelnetClient();
     private final Scanner inputScanner;
-    private final PrintWriter outputWriter;
 
     private final ExecutorService asyncExecutor = Executors.newCachedThreadPool();
 
     public CommandTelnetClient(String hostname, int port) throws IOException {
         telnetClient.connect(hostname, port);
-        inputStream = telnetClient.getInputStream();
-        inputReader =  new BufferedReader(new InputStreamReader(inputStream));
+        InputStream inputStream = telnetClient.getInputStream();
         inputScanner = new Scanner(inputStream, telnetClient.getCharset().name());
-        outputWriter = new PrintWriter(telnetClient.getOutputStream(), true);
+    }
+
+    public void addOptionHandler(TelnetOptionHandler optionHandler) throws InvalidTelnetOptionException, IOException {
+        telnetClient.addOptionHandler(optionHandler);
     }
 
     /**
@@ -41,24 +46,60 @@ public class CommandTelnetClient implements Closeable {
         });
     }
 
+    /**
+     * @param callback Accepts the read output and returns isCompleted flag
+     */
+    public void listenOutputLine(Function<String, Boolean> callback) {
+        asyncExecutor.submit(() -> {
+            Boolean isCompleted = false;
+            while (!Boolean.TRUE.equals(isCompleted) && inputScanner.hasNextLine()) {
+                String output = inputScanner.nextLine();
+                isCompleted = callback.apply(output);
+            }
+        });
+    }
+
     public String waitOutput() {
         return getFutureResult(waitOutputAsync());
     }
 
     public String waitOutput(@Nullable Pattern pattern) {
-        return getFutureResult(waitOutputAsync(pattern));
+        return waitOutput(pattern, false);
+    }
+
+    public String waitOutput(@Nullable Pattern pattern, boolean isUnmatchedKept) {
+        return getFutureResult(waitOutputAsync(pattern, isUnmatchedKept));
+    }
+
+    public String waitOutputLine() {
+        return getFutureResult(waitOutputLineAsync());
+    }
+
+    public String waitOutputLine(@Nullable Pattern pattern) {
+        return waitOutputLine(pattern, false);
+    }
+
+    public String waitOutputLine(@Nullable Pattern pattern, boolean isUnmatchedKept) {
+        return getFutureResult(waitOutputLineAsync(pattern, isUnmatchedKept));
     }
 
     public CompletableFuture<String> waitOutputAsync() {
-        return waitOutputAsync(null);
+        return waitOutputAsync(null, false);
     }
 
-    public CompletableFuture<String> waitOutputAsync(@Nullable Pattern pattern) {
+    public CompletableFuture<String> waitOutputLineAsync() {
+        return waitOutputLineAsync(null, false);
+    }
+
+    private CompletableFuture<String> waitOutputAsyncInternal(@Nullable Pattern pattern, Consumer<Function<String, Boolean>> listener, boolean isUnmatchedKept) {
         CompletableFuture<String> outputFuture = new CompletableFuture<>();
 
-        listenOutput(output -> {
-            if (pattern == null || pattern.matcher(output).find()) {
-                outputFuture.complete(output);
+        AtomicReference<String> keptOutput = new AtomicReference<>("");
+
+        listener.accept(output -> {
+            keptOutput.updateAndGet(value -> isUnmatchedKept ? value + output : output);
+            if (pattern == null || pattern.matcher(keptOutput.get()).find()) {
+                outputFuture.complete(keptOutput.get());
                 return true;
             }
 
@@ -68,14 +109,43 @@ public class CommandTelnetClient implements Closeable {
         return outputFuture;
     }
 
-    public void sendInput(String input) {
+    public CompletableFuture<String> waitOutputAsync(@Nullable Pattern pattern, boolean isUnmatchedKept) {
+        return waitOutputAsyncInternal(pattern, this::listenOutput, isUnmatchedKept);
+    }
+
+    public CompletableFuture<String> waitOutputLineAsync(@Nullable Pattern pattern, boolean isUnmatchedKept) {
+        return waitOutputAsyncInternal(pattern, this::listenOutputLine, isUnmatchedKept);
+    }
+
+    public void sendInput(byte[] bytesInput) {
         try {
-            telnetClient.getOutputStream().write((input + System.lineSeparator()).getBytes(telnetClient.getCharset()));
+            telnetClient.getOutputStream().write(bytesInput);
             telnetClient.getOutputStream().flush();
         } catch (IOException e) {
             throw new RuntimeException(e);
         }
-//        outputWriter.println(input);
+    }
+
+    public void sendInput(int[] bytesInput) {
+        sendInput(intArrayToBytes(bytesInput));
+    }
+
+    public void sendInputLine() {
+        sendInput(System.lineSeparator());
+    }
+
+    public void sendInputLine(String textInput) {
+        sendInput(textInput + System.lineSeparator());
+    }
+
+    public void sendInputPackets(String textInput) {
+        for (char textChar : textInput.toCharArray()) {
+            sendInput(Character.toString(textChar));
+        }
+    }
+
+    public void sendInput(String textInput) {
+        sendInput((textInput).getBytes(telnetClient.getCharset()));
     }
 
     public String sendCommand(String command) {
@@ -83,23 +153,6 @@ public class CommandTelnetClient implements Closeable {
     }
 
     public CompletableFuture<String> sendCommandAsync(String command) {
-//        telnetClient.registerInputListener(() -> {
-//            try {
-//                String input = new String(telnetClient.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
-//                System.out.println(input);
-//
-//                outputResponse.complete(input);
-//            } catch (IOException e) {
-//                throw new RuntimeException(e);
-//            }
-//        });
-
-//        try {
-//            inputStream.skip(Integer.MAX_VALUE);
-//        } catch (IOException e) {
-//            throw new RuntimeException(e);
-//        }
-
         CompletableFuture<String> outputResponse = waitOutputAsync();
 
         sendInput(command);
@@ -114,6 +167,14 @@ public class CommandTelnetClient implements Closeable {
             future.cancel(true);
             throw new RuntimeException(e);
         }
+    }
+
+    private byte[] intArrayToBytes(int[] array) {
+        byte[] result = new byte[array.length];
+        for (int i = 0; i < array.length; i++) {
+            result[i] = (byte) array[i];
+        }
+        return result;
     }
 
     @Override
